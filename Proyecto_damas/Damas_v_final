@@ -1,0 +1,535 @@
+import os
+import datetime
+import threading
+import time
+
+os.system("")
+
+TIEMPO_POR_MOVIMIENTO = 30
+TIEMPO_GLOBAL_POR_BANDO = 20 * 60
+
+RESET = "\033[0m"
+FONDO_CLARO = "\033[48;5;230m"
+FONDO_OSCURO = "\033[48;5;94m"
+FONDO_RESALTADO = "\033[48;5;15m"
+COLOR_CLARAS = "\033[38;5;16m"
+COLOR_OSCURAS = "\033[1;97m"
+COLOR_EN_RESALTADO = "\033[38;5;16m"
+
+CARPETA_PARTIDAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partidas_guardadas")
+
+tablero = [['.' for _ in range(8)] for _ in range(8)]
+
+historial = []
+numero_movimiento = 1
+tiempo_restante = {'c': TIEMPO_GLOBAL_POR_BANDO, 'o': TIEMPO_GLOBAL_POR_BANDO}
+
+def inicializar_tablero():
+    for fila in range(8):
+        for col in range(8):
+            tablero[fila][col] = '.'
+            if (fila + col) % 2 == 1:
+                if fila < 3:
+                    tablero[fila][col] = 'c'
+                elif fila > 4:
+                    tablero[fila][col] = 'o'
+
+def imprimir_tablero(resaltar=None):
+    if resaltar is None:
+        resaltar = set()
+    print("\n    1  2  3  4  5  6  7  8")
+    for fila in range(8):
+        print(chr(ord('a') + fila), " ", end="")
+        for col in range(8):
+            if (fila, col) in resaltar:
+                fondo = FONDO_RESALTADO
+            elif (fila + col) % 2 == 1:
+                fondo = FONDO_OSCURO
+            else:
+                fondo = FONDO_CLARO
+            pieza = tablero[fila][col]
+            simbolo = " "
+            color = ""
+            if pieza != '.':
+                if color_de(pieza) == 'c':
+                    simbolo = "D" if es_dama(pieza) else "●"
+                else:
+                    simbolo = "D" if es_dama(pieza) else "○"
+                if (fila, col) in resaltar:
+                    color = COLOR_EN_RESALTADO
+                else:
+                    color = COLOR_CLARAS if color_de(pieza) == 'c' else COLOR_OSCURAS
+            print(fondo + color + " " + simbolo + " " + RESET, end="")
+        print()
+
+def dentro_del_tablero(fila, col):
+    return 0 <= fila < 8 and 0 <= col < 8
+
+def color_de(pieza):
+    if pieza == 'c' or pieza == 'C':
+        return 'c'
+    return 'o'
+
+def es_dama(pieza):
+    return pieza == 'C' or pieza == 'O'
+
+def nombre_casilla(fila, col):
+    return chr(ord('a') + fila) + str(col + 1)
+
+def etiqueta_de_jugador(jugador):
+    if jugador == 'c':
+        return FONDO_OSCURO + COLOR_CLARAS + " ● CLARAS " + RESET
+    return FONDO_OSCURO + COLOR_OSCURAS + " ● OSCURAS " + RESET
+
+def formato_tiempo(segundos):
+    minutos = int(segundos) // 60
+    seg = int(segundos) % 60
+    return f"{minutos:02d}:{seg:02d}"
+
+def fichas_de(jugador):
+    lista = []
+    for fila in range(8):
+        for col in range(8):
+            if tablero[fila][col] != '.' and color_de(tablero[fila][col]) == jugador:
+                lista.append((fila, col))
+    return lista
+
+def opciones_de_direccion(pieza):
+    if es_dama(pieza):
+        return [("Izquierda arriba", -1, -1), ("Derecha arriba", -1, 1),
+                ("Izquierda abajo", 1, -1), ("Derecha abajo", 1, 1)]
+    adelante = 1 if color_de(pieza) == 'c' else -1
+    return [("Izquierda", adelante, -1), ("Derecha", adelante, 1)]
+
+def destino_de(fila, col, delta_fila, delta_col):
+    f1 = fila + delta_fila
+    c1 = col + delta_col
+    if not dentro_del_tablero(f1, c1):
+        return None
+    if tablero[f1][c1] == '.':
+        return f1, c1
+
+    f2 = fila + 2 * delta_fila
+    c2 = col + 2 * delta_col
+    es_enemigo = color_de(tablero[f1][c1]) != color_de(tablero[fila][col])
+    if es_enemigo and dentro_del_tablero(f2, c2) and tablero[f2][c2] == '.':
+        return f2, c2
+    return None
+
+def movimientos_desde(fila, col):
+    lista = []
+    for texto, delta_fila, delta_col in opciones_de_direccion(tablero[fila][col]):
+        destino = destino_de(fila, col, delta_fila, delta_col)
+        if destino is not None:
+            lista.append(destino)
+    return lista
+
+def puede_capturar_desde(fila, col):
+    for fd, cd in movimientos_desde(fila, col):
+        if abs(fd - fila) == 2:
+            return True
+    return False
+
+def fichas_que_pueden_comer(jugador):
+    lista = []
+    for fila, col in fichas_de(jugador):
+        if puede_capturar_desde(fila, col):
+            lista.append(nombre_casilla(fila, col))
+    return lista
+
+def jugador_puede_mover(jugador):
+    for fila, col in fichas_de(jugador):
+        if len(movimientos_desde(fila, col)) > 0:
+            return True
+    return False
+
+def coronar(fila, col):
+    if tablero[fila][col] == 'c' and fila == 7:
+        tablero[fila][col] = 'C'
+    if tablero[fila][col] == 'o' and fila == 0:
+        tablero[fila][col] = 'O'
+
+def mover_ficha(fo, co, fd, cd):
+    tablero[fd][cd] = tablero[fo][co]
+    tablero[fo][co] = '.'
+    if abs(fd - fo) == 2:
+        tablero[(fo + fd) // 2][(co + cd) // 2] = '.'
+    coronar(fd, cd)
+
+def leer_casilla(texto):
+    texto = texto.replace(" ", "").lower()
+    if len(texto) != 2 or texto[0] not in "abcdefgh" or texto[1] not in "12345678":
+        return None
+    return ord(texto[0]) - ord('a'), int(texto[1]) - 1
+
+def limpiar_pantalla():
+    os.system("cls" if os.name == "nt" else "clear")
+
+def leer_tecla(tiempo_limite):
+    fin = time.time() + tiempo_limite
+    try:
+        import msvcrt
+        while time.time() < fin:
+            if msvcrt.kbhit():
+                primero = msvcrt.getch()
+                if primero in (b'\x00', b'\xe0'):
+                    segundo = msvcrt.getch()
+                    if segundo == b'K':
+                        return "IZQUIERDA"
+                    if segundo == b'M':
+                        return "DERECHA"
+                elif primero == b'\r':
+                    return "ENTER"
+                elif primero == b'\x1b':
+                    return "ESC"
+            time.sleep(0.05)
+        return "TIEMPO"
+    except ImportError:
+        import sys, select, termios, tty
+        descriptor = sys.stdin.fileno()
+        configuracion_original = termios.tcgetattr(descriptor)
+        try:
+            tty.setraw(descriptor)
+            while time.time() < fin:
+                listos, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if listos:
+                    primero = sys.stdin.read(1)
+                    if primero == '\x1b':
+                        resto = sys.stdin.read(2)
+                        if resto == '[D':
+                            return "IZQUIERDA"
+                        if resto == '[C':
+                            return "DERECHA"
+                        return "ESC"
+                    if primero in ('\r', '\n'):
+                        return "ENTER"
+            return "TIEMPO"
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSADRAIN, configuracion_original)
+
+def elegir_direccion_con_flechas(fila, col, se_puede_cancelar, momento_limite):
+    opciones = opciones_de_direccion(tablero[fila][col])
+    indice = 0
+
+    while True:
+        segundos = momento_limite - time.time()
+        if segundos <= 0:
+            return "TIEMPO"
+
+        texto_opcion, delta_fila, delta_col = opciones[indice]
+        destino_actual = destino_de(fila, col, delta_fila, delta_col)
+
+        resaltar = {(fila, col)}
+        if destino_actual is not None:
+            resaltar.add(destino_actual)
+
+        limpiar_pantalla()
+        imprimir_tablero(resaltar)
+        print(f"\nFicha en {nombre_casilla(fila, col)}  ->  Dirección: {texto_opcion}")
+        if destino_actual is None:
+            print("(esa dirección no se puede usar)")
+        instrucciones = "◄ / ► para cambiar de dirección, Enter para confirmar"
+        if se_puede_cancelar:
+            instrucciones += ", Esc para cancelar"
+        print(instrucciones)
+
+        tecla = leer_tecla(segundos)
+
+        if tecla == "TIEMPO":
+            return "TIEMPO"
+        if tecla == "IZQUIERDA":
+            indice = (indice - 1) % len(opciones)
+        elif tecla == "DERECHA":
+            indice = (indice + 1) % len(opciones)
+        elif tecla == "ENTER" and destino_actual is not None:
+            return delta_fila, delta_col
+        elif tecla == "ESC" and se_puede_cancelar:
+            return "CANCELAR"
+
+def input_con_tiempo(mensaje, segundos):
+    respuesta = [None]
+
+    def leer_entrada():
+        respuesta[0] = input(mensaje)
+
+    hilo = threading.Thread(target=leer_entrada)
+    hilo.daemon = True
+    hilo.start()
+    hilo.join(segundos)
+
+    if hilo.is_alive():
+        return None
+    return respuesta[0]
+
+def registrar_movimiento(jugador, origen, destino, comio):
+    global numero_movimiento
+    nombre_jugador = "CLARAS" if jugador == 'c' else "OSCURAS"
+    texto = f"{numero_movimiento}. {nombre_jugador}: {nombre_casilla(*origen)} -> {nombre_casilla(*destino)}"
+    if comio:
+        texto += " (comió)"
+    historial.append(texto)
+    numero_movimiento += 1
+
+def registrar_perdida_turno(jugador):
+    global numero_movimiento
+    nombre_jugador = "CLARAS" if jugador == 'c' else "OSCURAS"
+    historial.append(f"{numero_movimiento}. {nombre_jugador}: perdió el turno (no movió a tiempo)")
+    numero_movimiento += 1
+
+def imprimir_historial():
+    if not historial:
+        print("\nTodavía no se ha movido ninguna ficha.")
+        return
+    print("\n--- Historial de la partida ---")
+    for movimiento in historial:
+        print(movimiento)
+    print("-------------------------------")
+
+def guardar_partida(turno):
+    if not historial:
+        print("No hay movimientos que guardar todavía.")
+        return
+    if not os.path.exists(CARPETA_PARTIDAS):
+        os.makedirs(CARPETA_PARTIDAS)
+
+    nombre = input("Ponle un nombre a la partida (o Enter para usar la fecha): ").strip()
+    if nombre == "":
+        nombre = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    ruta = os.path.join(CARPETA_PARTIDAS, nombre + ".txt")
+    with open(ruta, "w", encoding="utf-8") as archivo:
+        archivo.write(f"TURNO:{turno}\n")
+        archivo.write(f"TIEMPO_CLARAS:{int(tiempo_restante['c'])}\n")
+        archivo.write(f"TIEMPO_OSCURAS:{int(tiempo_restante['o'])}\n")
+        archivo.write("TABLERO:\n")
+        for fila in tablero:
+            archivo.write("".join(fila) + "\n")
+        archivo.write("HISTORIAL:\n")
+        for movimiento in historial:
+            archivo.write(movimiento + "\n")
+    print(f"Partida guardada en: {os.path.abspath(ruta)}")
+
+def cargar_partida(ruta):
+    with open(ruta, "r", encoding="utf-8") as archivo:
+        lineas = archivo.read().split("\n")
+
+    if len(lineas) < 13 or not lineas[0].startswith("TURNO:"):
+        return None
+
+    turno = lineas[0].split(":")[1]
+    tiempo_c = int(lineas[1].split(":")[1])
+    tiempo_o = int(lineas[2].split(":")[1])
+    filas_tablero = lineas[4:12]
+    indice_historial = lineas.index("HISTORIAL:") + 1
+    historial_cargado = [linea for linea in lineas[indice_historial:] if linea]
+
+    return turno, tiempo_c, tiempo_o, filas_tablero, historial_cargado
+
+def ver_partidas_guardadas():
+    if not os.path.exists(CARPETA_PARTIDAS) or not os.listdir(CARPETA_PARTIDAS):
+        print("\nNo hay partidas guardadas todavía.")
+        return
+
+    archivos = sorted(os.listdir(CARPETA_PARTIDAS))
+    print("\n--- Partidas guardadas ---")
+    for i in range(len(archivos)):
+        print(f"  {i + 1}) {archivos[i]}")
+    print("  0) Regresar")
+
+    respuesta = input("¿Cuál quieres ver? ").strip()
+    if not respuesta.isdigit() or int(respuesta) == 0 or int(respuesta) > len(archivos):
+        return
+
+    nombre_archivo = archivos[int(respuesta) - 1]
+    ruta = os.path.join(CARPETA_PARTIDAS, nombre_archivo)
+    with open(ruta, "r", encoding="utf-8") as archivo:
+        lineas = archivo.read().split("\n")
+
+    print(f"\n--- Movimientos de {nombre_archivo} ---")
+    if "HISTORIAL:" in lineas:
+        indice = lineas.index("HISTORIAL:") + 1
+        for linea in lineas[indice:]:
+            if linea:
+                print(linea)
+    else:
+        print("\n".join(lineas))
+
+def continuar_partida_guardada():
+    global historial, numero_movimiento
+
+    if not os.path.exists(CARPETA_PARTIDAS) or not os.listdir(CARPETA_PARTIDAS):
+        print("\nNo hay partidas guardadas todavía.")
+        return None
+
+    archivos = sorted(os.listdir(CARPETA_PARTIDAS))
+    print("\n--- Partidas guardadas ---")
+    for i in range(len(archivos)):
+        print(f"  {i + 1}) {archivos[i]}")
+    print("  0) Regresar")
+
+    respuesta = input("¿Cuál quieres continuar? ").strip()
+    if not respuesta.isdigit() or int(respuesta) == 0 or int(respuesta) > len(archivos):
+        return None
+
+    ruta = os.path.join(CARPETA_PARTIDAS, archivos[int(respuesta) - 1])
+    datos = cargar_partida(ruta)
+    if datos is None:
+        print("Esa partida es muy antigua y no se puede continuar, solo se puede ver.")
+        return None
+
+    turno, tiempo_c, tiempo_o, filas_tablero, historial_cargado = datos
+
+    for fila in range(8):
+        for col in range(8):
+            tablero[fila][col] = filas_tablero[fila][col]
+
+    tiempo_restante['c'] = tiempo_c
+    tiempo_restante['o'] = tiempo_o
+    historial = historial_cargado
+    numero_movimiento = len(historial) + 1
+
+    return turno
+
+def continuar_comiendo(fila, col, jugador):
+    while puede_capturar_desde(fila, col):
+        eleccion = elegir_direccion_con_flechas(fila, col, False, time.time() + 3600)
+        if eleccion in ("TIEMPO", "CANCELAR"):
+            continue
+        delta_fila, delta_col = eleccion
+        destino = destino_de(fila, col, delta_fila, delta_col)
+
+        if destino is None or abs(destino[0] - fila) != 2:
+            continue
+
+        registrar_movimiento(jugador, (fila, col), destino, True)
+        mover_ficha(fila, col, destino[0], destino[1])
+        fila, col = destino
+
+def jugar_un_turno(turno, obligadas):
+    momento_inicio = time.time()
+    tiempo_disponible = min(TIEMPO_POR_MOVIMIENTO, tiempo_restante[turno])
+    momento_limite = momento_inicio + tiempo_disponible
+
+    try:
+        mensaje = f"Tienes {int(tiempo_disponible)}s. Elige la ficha (ej: c2), escribe 'historial' o 'salir': "
+        texto = input_con_tiempo(mensaje, tiempo_disponible)
+
+        if texto is None:
+            print(f"\n¡Se acabó el tiempo! {etiqueta_de_jugador(turno)} pierde su turno.")
+            registrar_perdida_turno(turno)
+            return "PERDIO_TURNO"
+
+        if texto.strip().lower() == "historial":
+            imprimir_historial()
+            return "REINTENTAR"
+        if texto.strip().lower() == "salir":
+            print("Juego terminado por acuerdo entre los jugadores. ¡Empate!")
+            return "SALIR"
+
+        casilla = leer_casilla(texto)
+        if casilla is None:
+            print("Casilla no válida. Escribe una letra (a-h) y un número (1-8), por ejemplo: c2")
+            return "REINTENTAR"
+
+        fo, co = casilla
+        pieza = tablero[fo][co]
+        if pieza == '.' or color_de(pieza) != turno:
+            print("Ahí no hay una ficha tuya.")
+            return "REINTENTAR"
+
+        if len(movimientos_desde(fo, co)) == 0:
+            print("Esa ficha no tiene movimientos disponibles.")
+            return "REINTENTAR"
+
+        eleccion = elegir_direccion_con_flechas(fo, co, True, momento_limite)
+
+        if eleccion == "TIEMPO":
+            print(f"\n¡Se acabó el tiempo! {etiqueta_de_jugador(turno)} pierde su turno.")
+            registrar_perdida_turno(turno)
+            return "PERDIO_TURNO"
+        if eleccion == "CANCELAR":
+            print("Acción cancelada. Elige otra ficha.")
+            return "REINTENTAR"
+
+        delta_fila, delta_col = eleccion
+        destino = destino_de(fo, co, delta_fila, delta_col)
+        if destino is None or (obligadas and abs(destino[0] - fo) == 1):
+            print("Ese movimiento no es posible, intenta de nuevo.")
+            return "REINTENTAR"
+
+        fd, cd = destino
+        fue_comida = abs(fd - fo) == 2
+        registrar_movimiento(turno, (fo, co), (fd, cd), fue_comida)
+        mover_ficha(fo, co, fd, cd)
+        if fue_comida:
+            continuar_comiendo(fd, cd, turno)
+
+        return "MOVIO"
+    finally:
+        tiempo_restante[turno] = max(0, tiempo_restante[turno] - (time.time() - momento_inicio))
+
+def jugar():
+    global historial, numero_movimiento
+
+    while True:
+        print("\n=== DAMAS ===")
+        print("  1) Jugar partida nueva")
+        print("  2) Continuar partida guardada")
+        print("  3) Ver partidas guardadas")
+        print("  4) Salir del programa")
+        opcion = input("Elige una opción: ").strip()
+
+        if opcion == "3":
+            ver_partidas_guardadas()
+            continue
+        if opcion == "4":
+            print("¡Hasta luego!")
+            return
+        if opcion == "2":
+            turno = continuar_partida_guardada()
+            if turno is None:
+                continue
+        elif opcion == "1":
+            historial = []
+            numero_movimiento = 1
+            tiempo_restante['c'] = TIEMPO_GLOBAL_POR_BANDO
+            tiempo_restante['o'] = TIEMPO_GLOBAL_POR_BANDO
+            inicializar_tablero()
+            turno = 'c'
+        else:
+            print("Opción no válida.")
+            continue
+
+        while True:
+            imprimir_tablero()
+
+            if not jugador_puede_mover(turno):
+                print("\n¡Fin del juego! Ganan las fichas", "OSCURAS" if turno == 'c' else "CLARAS")
+                break
+
+            print("\nTurno de:", etiqueta_de_jugador(turno))
+            print(f"Tiempo restante — CLARAS: {formato_tiempo(tiempo_restante['c'])}   OSCURAS: {formato_tiempo(tiempo_restante['o'])}")
+
+            obligadas = fichas_que_pueden_comer(turno)
+            if obligadas:
+                print("¡Tienes que comer! Fichas que pueden comer:", ", ".join(obligadas))
+
+            resultado = jugar_un_turno(turno, obligadas)
+
+            if tiempo_restante[turno] <= 0:
+                print(f"\n¡Se acabó el tiempo de {etiqueta_de_jugador(turno)}! Gana",
+                      "OSCURAS" if turno == 'c' else "CLARAS", "por tiempo")
+                break
+
+            if resultado == "SALIR":
+                break
+            if resultado in ("MOVIO", "PERDIO_TURNO"):
+                turno = 'o' if turno == 'c' else 'c'
+
+        imprimir_historial()
+        respuesta = input("¿Quieres guardar esta partida (para verla o continuarla después)? (s/n): ").strip().lower()
+        if respuesta == "s":
+            guardar_partida(turno)
+
+if __name__ == "__main__":
+    jugar()
